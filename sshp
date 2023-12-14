@@ -1,0 +1,49 @@
+#!/bin/bash
+#
+# Copyright (c) 2022-2023  Christoph Niethammer <christoph.niethammer@gmail.com>
+#
+# Script to automatically create a ssh proxy, set up remote port forwarding and
+# set https_proxy variable env and run login shell (bash)
+#
+# Usage $0 <SSH_HOSTSPEC>
+# SSH_HOSTSPEC must be single WORD, use .ssh/config if options are needed
+# Will ask for local ssh authentication to set up proxy first
+
+host=$1
+
+PROXY_PORT_FILE=~/.ssh/proxyport
+PROXY_CONTROL_DIR=~/.ssh/controlmasters/
+mkdir -m 0700 -p $PROXY_CONTROL_DIR
+PROXY_CONTROL_PATH="$PROXY_CONTROL_DIR/proxy_%r@%h:%p"
+
+function cleanup() {
+    ssh -O check -S $PROXY_CONTROL_PATH localhost 2>/dev/null
+    ret=$?
+    if [[ "$ret" -eq 0 ]] ; then
+        read -r -p "Close proxy? [y/N] " response
+        if [[ "${response,,}" =~ ^(yes|y)$ ]] ; then 
+            ssh -O exit -S $PROXY_CONTROL_PATH localhost
+        fi
+    fi
+    exit
+}
+trap cleanup INT TERM EXIT
+
+ssh -O check -S $PROXY_CONTROL_PATH localhost 2>/dev/null
+ret=$?
+if [[ "$ret" -ne 0 ]] ; then
+    echo -n "Starting local proxy ..."
+    local_proxy_port=$(( 49152 +  RANDOM % 16383 ))
+    ssh -M -S $PROXY_CONTROL_PATH -Nf -D $local_proxy_port localhost
+    echo "done"
+    echo $local_proxy_port > $PROXY_PORT_FILE
+else
+    echo "Reusing already running local proxy"
+    local_proxy_port=$(cat $PROXY_PORT_FILE)
+fi
+
+proxy_port=$(( 49152 +  RANDOM % 16383))
+#echo "local_proxy_port: $local_proxy_port"
+#echo "proxy_port: $proxy_port"
+ssh -R $proxy_port:localhost:$local_proxy_port $host -t "env https_proxy=socks5://localhost:$proxy_port /bin/bash -l"
+
